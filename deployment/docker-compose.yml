@@ -1,0 +1,135 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: tetris-postgres
+    environment:
+      POSTGRES_USER: tetris
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-tetris_secret}
+      POSTGRES_DB: tetris_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tetris"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tetris-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: tetris-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - tetris-network
+
+  # Game Server (WebSocket)
+  game-server:
+    build:
+      context: ../backend/game-server
+      dockerfile: Dockerfile
+    container_name: tetris-game-server
+    environment:
+      - NODE_ENV=production
+      - PORT=3002
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=tetris
+      - DB_PASSWORD=${DB_PASSWORD:-tetris_secret}
+      - DB_NAME=tetris_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=${JWT_SECRET:-your-secret-key}
+    ports:
+      - "3002:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - tetris-network
+    restart: unless-stopped
+
+  # API Server (REST)
+  api-server:
+    build:
+      context: ../backend/api-server
+      dockerfile: Dockerfile
+    container_name: tetris-api-server
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=tetris
+      - DB_PASSWORD=${DB_PASSWORD:-tetris_secret}
+      - DB_NAME=tetris_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=${JWT_SECRET:-your-secret-key}
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - tetris-network
+    restart: unless-stopped
+
+  # Frontend (Static files served by nginx)
+  frontend:
+    build:
+      context: ../frontend/mobile-client
+      dockerfile: Dockerfile
+    container_name: tetris-frontend
+    volumes:
+      - frontend_build:/usr/share/nginx/html
+    networks:
+      - tetris-network
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: tetris-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+      - frontend_build:/var/www/tetris:ro
+    depends_on:
+      - api-server
+      - game-server
+      - frontend
+    networks:
+      - tetris-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  frontend_build:
+
+networks:
+  tetris-network:
+    driver: bridge
