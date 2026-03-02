@@ -537,7 +537,162 @@ class AntiCheatService {
 
 ---
 
-## Appendix: File Structure
+## Appendix A: Reverse Proxy Integration
+
+### A.1 Express.js Proxy Setup (Existing Infrastructure)
+
+For integration with an existing Express-based reverse proxy:
+
+```javascript
+// Add to existing reverse-proxy.js
+
+const { createProxyMiddleware } = require('http-proxy-middleware');
+
+// Tetris API (port 3003)
+app.use('/tetris/api', createProxyMiddleware({
+    target: 'http://127.0.0.1:3003',
+    changeOrigin: true,
+    pathRewrite: { '^/tetris/api': '' }
+}));
+
+// Tetris WebSocket (port 3004)
+app.use('/tetris/ws', createProxyMiddleware({
+    target: 'http://127.0.0.1:3004',
+    changeOrigin: true,
+    ws: true,
+    pathRewrite: { '^/tetris/ws': '' }
+}));
+
+// Tetris Frontend (port 3005)
+app.use('/tetris', createProxyMiddleware({
+    target: 'http://127.0.0.1:3005',
+    changeOrigin: true,
+    pathRewrite: { '^/tetris': '' }
+}));
+```
+
+### A.2 Port Allocation (Avoiding Conflicts)
+
+| Service | Port | Proxy Path | Purpose |
+|---------|------|------------|---------|
+| Main Proxy | 3001 | `/` | Existing proxy index |
+| Video | 3000 | `/video` | Video streaming |
+| Scheduler | 8080 | `/scheduler` | Task scheduler |
+| OpenClaw | 18789 | `/clawd` | AI gateway |
+| StockView | 5001 | `/stockview` | Finance dashboard |
+| **Tetris API** | **3003** | `/tetris/api` | Game REST API |
+| **Tetris WS** | **3004** | `/tetris/ws` | WebSocket server |
+| **Tetris Web** | **3005** | `/tetris` | Static frontend |
+
+### A.3 Service Status Check
+
+Add Tetris to proxy health check:
+
+```javascript
+async function getServiceStatus() {
+    const [clawd, video, scheduler, stockview, tetris] = await Promise.all([
+        checkService(18789, '/'),
+        checkService(3000, '/'),
+        checkService(8080, '/scheduler'),
+        checkService(5001, '/stockview/'),
+        checkService(3005, '/')  // Tetris frontend
+    ]);
+    
+    return { clawd, video, scheduler, stockview, tetris };
+}
+```
+
+### A.4 Docker Compose (Tetris Only)
+
+Since main services run separately, use isolated compose:
+
+```yaml
+version: '3.8'
+
+services:
+  tetris-postgres:
+    image: postgres:15-alpine
+    container_name: tetris-postgres
+    environment:
+      POSTGRES_USER: tetris
+      POSTGRES_PASSWORD: ${TETRIS_DB_PASSWORD}
+      POSTGRES_DB: tetris_db
+    volumes:
+      - tetris_postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    ports:
+      - "5433:5432"  # Non-conflicting port
+    networks:
+      - tetris-network
+
+  tetris-redis:
+    image: redis:7-alpine
+    container_name: tetris-redis
+    ports:
+      - "6380:6379"  # Non-conflicting port
+    networks:
+      - tetris-network
+
+  tetris-api:
+    build: ./backend/api-server
+    container_name: tetris-api
+    environment:
+      - PORT=3003
+      - DB_HOST=tetris-postgres
+      - DB_PORT=5432
+      - REDIS_HOST=tetris-redis
+    ports:
+      - "3003:3003"
+    depends_on:
+      - tetris-postgres
+      - tetris-redis
+    networks:
+      - tetris-network
+
+  tetris-ws:
+    build: ./backend/game-server
+    container_name: tetris-ws
+    environment:
+      - PORT=3004
+      - DB_HOST=tetris-postgres
+      - REDIS_HOST=tetris-redis
+    ports:
+      - "3004:3004"
+    depends_on:
+      - tetris-postgres
+      - tetris-redis
+    networks:
+      - tetris-network
+
+  tetris-frontend:
+    build: ./frontend/mobile-client
+    container_name: tetris-frontend
+    ports:
+      - "3005:80"
+    networks:
+      - tetris-network
+
+volumes:
+  tetris_postgres_data:
+
+networks:
+  tetris-network:
+    driver: bridge
+```
+
+### A.5 Access URLs
+
+Once deployed behind Tailscale:
+
+| URL | Service |
+|-----|---------|
+| `https://your-domain/tetris/` | Tetris Game |
+| `https://your-domain/tetris/api/` | REST API |
+| `https://your-domain/tetris/ws/` | WebSocket |
+
+---
+
+## Appendix B: File Structure
 
 ```
 docs/
